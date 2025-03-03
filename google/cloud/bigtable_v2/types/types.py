@@ -35,34 +35,27 @@ class Type(proto.Message):
     features.
 
     For compatibility with Bigtable's existing untyped APIs, each
-    ``Type`` includes an ``Encoding`` which describes how to convert
-    to/from the underlying data.
+    ``Type`` includes an ``Encoding`` which describes how to convert to
+    or from the underlying data.
 
-    Each encoding also defines the following properties:
+    Each encoding can operate in one of two modes:
 
-    -  Order-preserving: Does the encoded value sort consistently with
-       the original typed value? Note that Bigtable will always sort
-       data based on the raw encoded value, *not* the decoded type.
+    -  Sorted: In this mode, Bigtable guarantees that
+       ``Encode(X) <= Encode(Y)`` if and only if ``X <= Y``. This is
+       useful anywhere sort order is important, for example when
+       encoding keys.
+    -  Distinct: In this mode, Bigtable guarantees that if ``X != Y``
+       then ``Encode(X) != Encode(Y)``. However, the converse is not
+       guaranteed. For example, both "{'foo': '1', 'bar': '2'}" and
+       "{'bar': '2', 'foo': '1'}" are valid encodings of the same JSON
+       value.
 
-       -  Example: BYTES values sort in the same order as their raw
-          encodings.
-       -  Counterexample: Encoding INT64 as a fixed-width decimal string
-          does *not* preserve sort order when dealing with negative
-          numbers. ``INT64(1) > INT64(-1)``, but
-          ``STRING("-00001") > STRING("00001)``.
-
-    -  Self-delimiting: If we concatenate two encoded values, can we
-       always tell where the first one ends and the second one begins?
-
-       -  Example: If we encode INT64s to fixed-width STRINGs, the first
-          value will always contain exactly N digits, possibly preceded
-          by a sign.
-       -  Counterexample: If we concatenate two UTF-8 encoded STRINGs,
-          we have no way to tell where the first one ends.
-
-    -  Compatibility: Which other systems have matching encoding
-       schemes? For example, does this encoding have a GoogleSQL
-       equivalent? HBase? Java?
+    The API clearly documents which mode is used wherever an encoding
+    can be configured. Each encoding also documents which values are
+    supported in which modes. For example, when encoding INT64 as a
+    numeric STRING, negative numbers cannot be encoded in sorted mode.
+    This is because ``INT64(1) > INT64(-1)``, but
+    ``STRING("-00001") > STRING("00001")``.
 
     This message has `oneof`_ fields (mutually exclusive fields).
     For each oneof, at most one member field can be set at the same time.
@@ -127,12 +120,12 @@ class Type(proto.Message):
 
         Attributes:
             encoding (google.cloud.bigtable_v2.types.Type.Bytes.Encoding):
-                The encoding to use when converting to/from
-                lower level types.
+                The encoding to use when converting to or
+                from lower level types.
         """
 
         class Encoding(proto.Message):
-            r"""Rules used to convert to/from lower level types.
+            r"""Rules used to convert to or from lower level types.
 
             .. _oneof: https://proto-plus-python.readthedocs.io/en/stable/fields.html#oneofs-mutually-exclusive-fields
 
@@ -144,11 +137,11 @@ class Type(proto.Message):
             """
 
             class Raw(proto.Message):
-                r"""Leaves the value "as-is"
+                r"""Leaves the value as-is.
 
-                -  Order-preserving? Yes
-                -  Self-delimiting? No
-                -  Compatibility? N/A
+                Sorted mode: all values are supported.
+
+                Distinct mode: all values are supported.
 
                 """
 
@@ -171,12 +164,12 @@ class Type(proto.Message):
 
         Attributes:
             encoding (google.cloud.bigtable_v2.types.Type.String.Encoding):
-                The encoding to use when converting to/from
-                lower level types.
+                The encoding to use when converting to or
+                from lower level types.
         """
 
         class Encoding(proto.Message):
-            r"""Rules used to convert to/from lower level types.
+            r"""Rules used to convert to or from lower level types.
 
             This message has `oneof`_ fields (mutually exclusive fields).
             For each oneof, at most one member field can be set at the same time.
@@ -200,15 +193,20 @@ class Type(proto.Message):
                 r"""Deprecated: prefer the equivalent ``Utf8Bytes``."""
 
             class Utf8Bytes(proto.Message):
-                r"""UTF-8 encoding
+                r"""UTF-8 encoding.
 
-                -  Order-preserving? Yes (code point order)
-                -  Self-delimiting? No
-                -  Compatibility?
+                Sorted mode:
 
-                   -  BigQuery Federation ``TEXT`` encoding
-                   -  HBase ``Bytes.toBytes``
-                   -  Java ``String#getBytes(StandardCharsets.UTF_8)``
+                -  All values are supported.
+                -  Code point order is preserved.
+
+                Distinct mode: all values are supported.
+
+                Compatible with:
+
+                -  BigQuery ``TEXT`` encoding
+                -  HBase ``Bytes.toBytes``
+                -  Java ``String#getBytes(StandardCharsets.UTF_8)``
 
                 """
 
@@ -236,12 +234,12 @@ class Type(proto.Message):
 
         Attributes:
             encoding (google.cloud.bigtable_v2.types.Type.Int64.Encoding):
-                The encoding to use when converting to/from
-                lower level types.
+                The encoding to use when converting to or
+                from lower level types.
         """
 
         class Encoding(proto.Message):
-            r"""Rules used to convert to/from lower level types.
+            r"""Rules used to convert to or from lower level types.
 
             .. _oneof: https://proto-plus-python.readthedocs.io/en/stable/fields.html#oneofs-mutually-exclusive-fields
 
@@ -253,16 +251,17 @@ class Type(proto.Message):
             """
 
             class BigEndianBytes(proto.Message):
-                r"""Encodes the value as an 8-byte big endian twos complement ``Bytes``
-                value.
+                r"""Encodes the value as an 8-byte big-endian two's complement value.
 
-                -  Order-preserving? No (positive values only)
-                -  Self-delimiting? Yes
-                -  Compatibility?
+                Sorted mode: non-negative values are supported.
 
-                   -  BigQuery Federation ``BINARY`` encoding
-                   -  HBase ``Bytes.toBytes``
-                   -  Java ``ByteBuffer.putLong()`` with ``ByteOrder.BIG_ENDIAN``
+                Distinct mode: all values are supported.
+
+                Compatible with:
+
+                -  BigQuery ``BINARY`` encoding
+                -  HBase ``Bytes.toBytes``
+                -  Java ``ByteBuffer.putLong()`` with ``ByteOrder.BIG_ENDIAN``
 
                 Attributes:
                     bytes_type (google.cloud.bigtable_v2.types.Type.Bytes):
@@ -399,8 +398,8 @@ class Type(proto.Message):
         r"""A value that combines incremental updates into a summarized value.
 
         Data is never directly written or read using type ``Aggregate``.
-        Writes will provide either the ``input_type`` or ``state_type``, and
-        reads will always return the ``state_type`` .
+        Writes provide either the ``input_type`` or ``state_type``, and
+        reads always return the ``state_type`` .
 
         This message has `oneof`_ fields (mutually exclusive fields).
         For each oneof, at most one member field can be set at the same time.
@@ -412,13 +411,12 @@ class Type(proto.Message):
         Attributes:
             input_type (google.cloud.bigtable_v2.types.Type):
                 Type of the inputs that are accumulated by this
-                ``Aggregate``, which must specify a full encoding. Use
-                ``AddInput`` mutations to accumulate new inputs.
+                ``Aggregate``. Use ``AddInput`` mutations to accumulate new
+                inputs.
             state_type (google.cloud.bigtable_v2.types.Type):
                 Output only. Type that holds the internal accumulator state
                 for the ``Aggregate``. This is a function of the
-                ``input_type`` and ``aggregator`` chosen, and will always
-                specify a full encoding.
+                ``input_type`` and ``aggregator`` chosen.
             sum (google.cloud.bigtable_v2.types.Type.Aggregate.Sum):
                 Sum aggregator.
 

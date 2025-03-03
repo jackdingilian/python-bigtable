@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import logging as std_logging
 from collections import OrderedDict
 import re
 from typing import (
@@ -48,9 +49,19 @@ except AttributeError:  # pragma: NO COVER
 from google.cloud.bigtable_v2.types import bigtable
 from google.cloud.bigtable_v2.types import data
 from google.cloud.bigtable_v2.types import request_stats
+from google.protobuf import timestamp_pb2  # type: ignore
 from .transports.base import BigtableTransport, DEFAULT_CLIENT_INFO
 from .transports.grpc_asyncio import BigtableGrpcAsyncIOTransport
 from .client import BigtableClient
+
+try:
+    from google.api_core import client_logging  # type: ignore
+
+    CLIENT_LOGGING_SUPPORTED = True  # pragma: NO COVER
+except ImportError:  # pragma: NO COVER
+    CLIENT_LOGGING_SUPPORTED = False
+
+_LOGGER = std_logging.getLogger(__name__)
 
 
 class BigtableAsyncClient:
@@ -212,6 +223,9 @@ class BigtableAsyncClient:
                 If a Callable is given, it will be called with the same set of initialization
                 arguments as used in the BigtableTransport constructor.
                 If set to None, a transport is chosen automatically.
+                NOTE: "rest" transport functionality is currently in a
+                beta state (preview). We welcome your feedback via an
+                issue in this library's source repository.
             client_options (Optional[Union[google.api_core.client_options.ClientOptions, dict]]):
                 Custom options for the client.
 
@@ -255,6 +269,28 @@ class BigtableAsyncClient:
             client_info=client_info,
         )
 
+        if CLIENT_LOGGING_SUPPORTED and _LOGGER.isEnabledFor(
+            std_logging.DEBUG
+        ):  # pragma: NO COVER
+            _LOGGER.debug(
+                "Created client `google.bigtable_v2.BigtableAsyncClient`.",
+                extra={
+                    "serviceName": "google.bigtable.v2.Bigtable",
+                    "universeDomain": getattr(
+                        self._client._transport._credentials, "universe_domain", ""
+                    ),
+                    "credentialsType": f"{type(self._client._transport._credentials).__module__}.{type(self._client._transport._credentials).__qualname__}",
+                    "credentialsInfo": getattr(
+                        self.transport._credentials, "get_cred_info", lambda: None
+                    )(),
+                }
+                if hasattr(self._client._transport, "_credentials")
+                else {
+                    "serviceName": "google.bigtable.v2.Bigtable",
+                    "credentialsType": None,
+                },
+            )
+
     def read_rows(
         self,
         request: Optional[Union[bigtable.ReadRowsRequest, dict]] = None,
@@ -263,7 +299,7 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> Awaitable[AsyncIterable[bigtable.ReadRowsResponse]]:
         r"""Streams back the contents of all requested rows in
         key order, optionally applying the same Reader filter to
@@ -298,8 +334,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             AsyncIterable[google.cloud.bigtable_v2.types.ReadRowsResponse]:
@@ -348,18 +386,16 @@ class BigtableAsyncClient:
             header_params["app_profile_id"] = request.app_profile_id
 
         routing_param_regex = re.compile(
-            "^(?P<authorized_view_name>projects/[^/]+/instances/[^/]+/tables/[^/]+/authorizedViews/[^/]+)$"
+            "^(?P<table_name>projects/[^/]+/instances/[^/]+/tables/[^/]+)(?:/.*)?$"
         )
         regex_match = routing_param_regex.match(request.authorized_view_name)
-        if regex_match and regex_match.group("authorized_view_name"):
-            header_params["authorized_view_name"] = regex_match.group(
-                "authorized_view_name"
-            )
+        if regex_match and regex_match.group("table_name"):
+            header_params["table_name"] = regex_match.group("table_name")
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
@@ -383,7 +419,7 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> Awaitable[AsyncIterable[bigtable.SampleRowKeysResponse]]:
         r"""Returns a sample of row keys in the table. The
         returned row keys will delimit contiguous sections of
@@ -417,8 +453,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             AsyncIterable[google.cloud.bigtable_v2.types.SampleRowKeysResponse]:
@@ -467,18 +505,16 @@ class BigtableAsyncClient:
             header_params["app_profile_id"] = request.app_profile_id
 
         routing_param_regex = re.compile(
-            "^(?P<authorized_view_name>projects/[^/]+/instances/[^/]+/tables/[^/]+/authorizedViews/[^/]+)$"
+            "^(?P<table_name>projects/[^/]+/instances/[^/]+/tables/[^/]+)(?:/.*)?$"
         )
         regex_match = routing_param_regex.match(request.authorized_view_name)
-        if regex_match and regex_match.group("authorized_view_name"):
-            header_params["authorized_view_name"] = regex_match.group(
-                "authorized_view_name"
-            )
+        if regex_match and regex_match.group("table_name"):
+            header_params["table_name"] = regex_match.group("table_name")
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
@@ -504,7 +540,7 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> bigtable.MutateRowResponse:
         r"""Mutates a row atomically. Cells already present in the row are
         left unchanged unless explicitly changed by ``mutation``.
@@ -553,8 +589,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             google.cloud.bigtable_v2.types.MutateRowResponse:
@@ -607,18 +645,16 @@ class BigtableAsyncClient:
             header_params["app_profile_id"] = request.app_profile_id
 
         routing_param_regex = re.compile(
-            "^(?P<authorized_view_name>projects/[^/]+/instances/[^/]+/tables/[^/]+/authorizedViews/[^/]+)$"
+            "^(?P<table_name>projects/[^/]+/instances/[^/]+/tables/[^/]+)(?:/.*)?$"
         )
         regex_match = routing_param_regex.match(request.authorized_view_name)
-        if regex_match and regex_match.group("authorized_view_name"):
-            header_params["authorized_view_name"] = regex_match.group(
-                "authorized_view_name"
-            )
+        if regex_match and regex_match.group("table_name"):
+            header_params["table_name"] = regex_match.group("table_name")
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
@@ -643,7 +679,7 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> Awaitable[AsyncIterable[bigtable.MutateRowsResponse]]:
         r"""Mutates multiple rows in a batch. Each individual row
         is mutated atomically as in MutateRow, but the entire
@@ -689,8 +725,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             AsyncIterable[google.cloud.bigtable_v2.types.MutateRowsResponse]:
@@ -741,18 +779,16 @@ class BigtableAsyncClient:
             header_params["app_profile_id"] = request.app_profile_id
 
         routing_param_regex = re.compile(
-            "^(?P<authorized_view_name>projects/[^/]+/instances/[^/]+/tables/[^/]+/authorizedViews/[^/]+)$"
+            "^(?P<table_name>projects/[^/]+/instances/[^/]+/tables/[^/]+)(?:/.*)?$"
         )
         regex_match = routing_param_regex.match(request.authorized_view_name)
-        if regex_match and regex_match.group("authorized_view_name"):
-            header_params["authorized_view_name"] = regex_match.group(
-                "authorized_view_name"
-            )
+        if regex_match and regex_match.group("table_name"):
+            header_params["table_name"] = regex_match.group("table_name")
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
@@ -780,7 +816,7 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> bigtable.CheckAndMutateRowResponse:
         r"""Mutates a row atomically based on the output of a
         predicate Reader filter.
@@ -851,8 +887,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             google.cloud.bigtable_v2.types.CheckAndMutateRowResponse:
@@ -918,18 +956,16 @@ class BigtableAsyncClient:
             header_params["app_profile_id"] = request.app_profile_id
 
         routing_param_regex = re.compile(
-            "^(?P<authorized_view_name>projects/[^/]+/instances/[^/]+/tables/[^/]+/authorizedViews/[^/]+)$"
+            "^(?P<table_name>projects/[^/]+/instances/[^/]+/tables/[^/]+)(?:/.*)?$"
         )
         regex_match = routing_param_regex.match(request.authorized_view_name)
-        if regex_match and regex_match.group("authorized_view_name"):
-            header_params["authorized_view_name"] = regex_match.group(
-                "authorized_view_name"
-            )
+        if regex_match and regex_match.group("table_name"):
+            header_params["table_name"] = regex_match.group("table_name")
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
@@ -953,7 +989,7 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> bigtable.PingAndWarmResponse:
         r"""Warm up associated instance metadata for this
         connection. This call is not required but may be useful
@@ -983,8 +1019,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             google.cloud.bigtable_v2.types.PingAndWarmResponse:
@@ -1032,9 +1070,9 @@ class BigtableAsyncClient:
             header_params["app_profile_id"] = request.app_profile_id
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
@@ -1060,7 +1098,7 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> bigtable.ReadModifyWriteRowResponse:
         r"""Modifies a row atomically on the server. The method
         reads the latest existing timestamp and value from the
@@ -1098,7 +1136,9 @@ class BigtableAsyncClient:
                 transformed into writes. Entries are
                 applied in order, meaning that earlier
                 rules will affect the results of later
-                ones.
+                ones. At least one entry must be
+                specified, and there can be at most
+                100000 rules.
 
                 This corresponds to the ``rules`` field
                 on the ``request`` instance; if ``request`` is provided, this
@@ -1115,8 +1155,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             google.cloud.bigtable_v2.types.ReadModifyWriteRowResponse:
@@ -1169,18 +1211,16 @@ class BigtableAsyncClient:
             header_params["app_profile_id"] = request.app_profile_id
 
         routing_param_regex = re.compile(
-            "^(?P<authorized_view_name>projects/[^/]+/instances/[^/]+/tables/[^/]+/authorizedViews/[^/]+)$"
+            "^(?P<table_name>projects/[^/]+/instances/[^/]+/tables/[^/]+)(?:/.*)?$"
         )
         regex_match = routing_param_regex.match(request.authorized_view_name)
-        if regex_match and regex_match.group("authorized_view_name"):
-            header_params["authorized_view_name"] = regex_match.group(
-                "authorized_view_name"
-            )
+        if regex_match and regex_match.group("table_name"):
+            header_params["table_name"] = regex_match.group("table_name")
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
@@ -1206,14 +1246,14 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> Awaitable[
         AsyncIterable[bigtable.GenerateInitialChangeStreamPartitionsResponse]
     ]:
-        r"""NOTE: This API is intended to be used by Apache Beam BigtableIO.
-        Returns the current list of partitions that make up the table's
+        r"""Returns the current list of partitions that make up the table's
         change stream. The union of partitions will cover the entire
         keyspace. Partitions can be read with ``ReadChangeStream``.
+        NOTE: This API is intended to be used by Apache Beam BigtableIO.
 
         Args:
             request (Optional[Union[google.cloud.bigtable_v2.types.GenerateInitialChangeStreamPartitionsRequest, dict]]):
@@ -1243,8 +1283,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             AsyncIterable[google.cloud.bigtable_v2.types.GenerateInitialChangeStreamPartitionsResponse]:
@@ -1314,12 +1356,13 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> Awaitable[AsyncIterable[bigtable.ReadChangeStreamResponse]]:
-        r"""NOTE: This API is intended to be used by Apache Beam
-        BigtableIO. Reads changes from a table's change stream.
-        Changes will reflect both user-initiated mutations and
-        mutations that are caused by garbage collection.
+        r"""Reads changes from a table's change stream. Changes
+        will reflect both user-initiated mutations and mutations
+        that are caused by garbage collection.
+        NOTE: This API is intended to be used by Apache Beam
+        BigtableIO.
 
         Args:
             request (Optional[Union[google.cloud.bigtable_v2.types.ReadChangeStreamRequest, dict]]):
@@ -1348,8 +1391,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             AsyncIterable[google.cloud.bigtable_v2.types.ReadChangeStreamResponse]:
@@ -1408,6 +1453,121 @@ class BigtableAsyncClient:
         # Done; return the response.
         return response
 
+    async def prepare_query(
+        self,
+        request: Optional[Union[bigtable.PrepareQueryRequest, dict]] = None,
+        *,
+        instance_name: Optional[str] = None,
+        query: Optional[str] = None,
+        app_profile_id: Optional[str] = None,
+        retry: OptionalRetry = gapic_v1.method.DEFAULT,
+        timeout: Union[float, object] = gapic_v1.method.DEFAULT,
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
+    ) -> bigtable.PrepareQueryResponse:
+        r"""Prepares a GoogleSQL query for execution on a
+        particular Bigtable instance.
+
+        Args:
+            request (Optional[Union[google.cloud.bigtable_v2.types.PrepareQueryRequest, dict]]):
+                The request object. Request message for
+                Bigtable.PrepareQuery
+            instance_name (:class:`str`):
+                Required. The unique name of the instance against which
+                the query should be executed. Values are of the form
+                ``projects/<project>/instances/<instance>``
+
+                This corresponds to the ``instance_name`` field
+                on the ``request`` instance; if ``request`` is provided, this
+                should not be set.
+            query (:class:`str`):
+                Required. The query string.
+                This corresponds to the ``query`` field
+                on the ``request`` instance; if ``request`` is provided, this
+                should not be set.
+            app_profile_id (:class:`str`):
+                Optional. This value specifies routing for preparing the
+                query. Note that this ``app_profile_id`` is only used
+                for preparing the query. The actual query execution will
+                use the app profile specified in the
+                ``ExecuteQueryRequest``. If not specified, the
+                ``default`` application profile will be used.
+
+                This corresponds to the ``app_profile_id`` field
+                on the ``request`` instance; if ``request`` is provided, this
+                should not be set.
+            retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
+                should be retried.
+            timeout (float): The timeout for this request.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
+
+        Returns:
+            google.cloud.bigtable_v2.types.PrepareQueryResponse:
+                Response message for
+                Bigtable.PrepareQueryResponse
+
+        """
+        # Create or coerce a protobuf request object.
+        # - Quick check: If we got a request object, we should *not* have
+        #   gotten any keyword arguments that map to the request.
+        has_flattened_params = any([instance_name, query, app_profile_id])
+        if request is not None and has_flattened_params:
+            raise ValueError(
+                "If the `request` argument is set, then none of "
+                "the individual field arguments should be set."
+            )
+
+        # - Use the request object if provided (there's no risk of modifying the input as
+        #   there are no flattened fields), or create one.
+        if not isinstance(request, bigtable.PrepareQueryRequest):
+            request = bigtable.PrepareQueryRequest(request)
+
+        # If we have keyword arguments corresponding to fields on the
+        # request, apply these.
+        if instance_name is not None:
+            request.instance_name = instance_name
+        if query is not None:
+            request.query = query
+        if app_profile_id is not None:
+            request.app_profile_id = app_profile_id
+
+        # Wrap the RPC method; this adds retry and timeout information,
+        # and friendly error handling.
+        rpc = self._client._transport._wrapped_methods[
+            self._client._transport.prepare_query
+        ]
+
+        header_params = {}
+
+        routing_param_regex = re.compile("^(?P<name>projects/[^/]+/instances/[^/]+)$")
+        regex_match = routing_param_regex.match(request.instance_name)
+        if regex_match and regex_match.group("name"):
+            header_params["name"] = regex_match.group("name")
+
+        if request.app_profile_id:
+            header_params["app_profile_id"] = request.app_profile_id
+
+        if header_params:
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
+
+        # Validate the universe domain.
+        self._client._validate_universe_domain()
+
+        # Send the request.
+        response = await rpc(
+            request,
+            retry=retry,
+            timeout=timeout,
+            metadata=metadata,
+        )
+
+        # Done; return the response.
+        return response
+
     def execute_query(
         self,
         request: Optional[Union[bigtable.ExecuteQueryRequest, dict]] = None,
@@ -1417,10 +1577,10 @@ class BigtableAsyncClient:
         app_profile_id: Optional[str] = None,
         retry: OptionalRetry = gapic_v1.method.DEFAULT,
         timeout: Union[float, object] = gapic_v1.method.DEFAULT,
-        metadata: Sequence[Tuple[str, str]] = (),
+        metadata: Sequence[Tuple[str, Union[str, bytes]]] = (),
     ) -> Awaitable[AsyncIterable[bigtable.ExecuteQueryResponse]]:
-        r"""Executes a BTQL query against a particular Cloud
-        Bigtable instance.
+        r"""Executes a SQL query against a particular Bigtable
+        instance.
 
         Args:
             request (Optional[Union[google.cloud.bigtable_v2.types.ExecuteQueryRequest, dict]]):
@@ -1436,6 +1596,11 @@ class BigtableAsyncClient:
                 should not be set.
             query (:class:`str`):
                 Required. The query string.
+
+                Exactly one of ``query`` and ``prepared_query`` is
+                required. Setting both or neither is an
+                ``INVALID_ARGUMENT``.
+
                 This corresponds to the ``query`` field
                 on the ``request`` instance; if ``request`` is provided, this
                 should not be set.
@@ -1450,8 +1615,10 @@ class BigtableAsyncClient:
             retry (google.api_core.retry_async.AsyncRetry): Designation of what errors, if any,
                 should be retried.
             timeout (float): The timeout for this request.
-            metadata (Sequence[Tuple[str, str]]): Strings which should be
-                sent along with the request as metadata.
+            metadata (Sequence[Tuple[str, Union[str, bytes]]]): Key/value pairs which should be
+                sent along with the request as metadata. Normally, each value must be of type `str`,
+                but for metadata keys ending with the suffix `-bin`, the corresponding values must
+                be of type `bytes`.
 
         Returns:
             AsyncIterable[google.cloud.bigtable_v2.types.ExecuteQueryResponse]:
@@ -1496,14 +1663,13 @@ class BigtableAsyncClient:
         if regex_match and regex_match.group("name"):
             header_params["name"] = regex_match.group("name")
 
-        if request.app_profile_id is not None:
-            # execute_query currently requires empty header support. TODO: remove after support is added
+        if request.app_profile_id:
             header_params["app_profile_id"] = request.app_profile_id
 
         if header_params:
-            metadata = tuple(metadata)
-        if all(m[0] != gapic_v1.routing_header.ROUTING_METADATA_KEY for m in metadata):
-            metadata += (gapic_v1.routing_header.to_grpc_metadata(header_params),)
+            metadata = tuple(metadata) + (
+                gapic_v1.routing_header.to_grpc_metadata(header_params),
+            )
 
         # Validate the universe domain.
         self._client._validate_universe_domain()
