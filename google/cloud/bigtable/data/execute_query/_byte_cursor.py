@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import List, Optional
 
+from google.cloud.bigtable.data.execute_query._checksum import _CRC32C
 from google.cloud.bigtable_v2 import ExecuteQueryResponse
 
 
@@ -30,9 +31,16 @@ class _ByteCursor:
     See :class:`google.cloud.bigtable.execute_query_reader._Reader` for more context.
     """
 
-    def __init__(self):
-        self._buffer = bytearray()
+    def __init__(self, crc32c_impl: _CRC32C):
+        self._batch_buffer = bytearray()
+        self._batches = []
         self._resume_token = None
+        self._last_response_results_field = None
+        self._crc32c = crc32c_impl
+
+    def reset(self):
+        self._batch_buffer = bytearray()
+        self._batches = []
 
     def prepare_for_new_request(self):
         """
@@ -50,13 +58,15 @@ class _ByteCursor:
         Returns:
             bytes: Last received resume_token.
         """
-        self._buffer = bytearray()
+        # The first response of any retried stream will always contain reset, so
+        # this isn't actually necessary, but we do it for safety
+        self.reset()
         return self._resume_token
 
     def empty(self) -> bool:
-        return len(self._buffer) == 0
+        return not self._batch_buffer and not self._batches
 
-    def consume(self, response: ExecuteQueryResponse) -> Optional[bytes]:
+    def consume(self, response: ExecuteQueryResponse) -> Optional[List[bytes]]:
         """
         Reads results bytes from an ``ExecuteQuery`` response and adds them to a buffer.
 
@@ -72,7 +82,8 @@ class _ByteCursor:
                 Response obtained from the stream.
 
         Returns:
-            bytes or None: bytes if buffers were flushed or None otherwise.
+            bytes or None: List of bytes if buffers were flushed or None otherwise.
+            Each element in the list represents the bytes of a `ProtoRows` message.
 
         Raises:
             ValueError: If provided ``ExecuteQueryResponse`` is not valid
@@ -83,15 +94,32 @@ class _ByteCursor:
 
         if response_pb.HasField("results"):
             results = response_pb.results
+            if results.reset:
+                self.reset()
             if results.HasField("proto_rows_batch"):
-                self._buffer.extend(results.proto_rows_batch.batch_data)
+                self._batch_buffer.extend(results.proto_rows_batch.batch_data)
+                # Note that 0 is a valid checksum so we must check for field presence
+                if results.HasField("batch_checksum"):
+                    if self._crc32c.enabled():
+                        expected_checksum = results.batch_checksum
+                        checksum = self._crc32c.checksum(self._batch_buffer)
+                        if expected_checksum != checksum:
+                            raise ValueError(
+                                f"Unexpected checksum mismatch. Expected: {expected_checksum}, got: {checksum}"
+                            )
+                    # We have a complete batch so we move it to batches and reset the
+                    # batch_buffer
+                    self._batches.append(memoryview(self._batch_buffer))
+                    self._batch_buffer = bytearray()
 
             if results.resume_token:
                 self._resume_token = results.resume_token
 
-                if self._buffer:
-                    return_value = memoryview(self._buffer)
-                    self._buffer = bytearray()
+                if self._batches:
+                    if self._batch_buffer:
+                        raise ValueError("Unexpected resume_token without checksum")
+                    return_value = self._batches
+                    self._batches = []
                     return return_value
         else:
             raise ValueError(f"Unexpected ExecuteQueryResponse: {response}")

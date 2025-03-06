@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import (
+    List,
     TypeVar,
     Generic,
     Iterable,
@@ -52,8 +53,8 @@ class _Reader(ABC, Generic[T]):
     """
 
     @abstractmethod
-    def consume(self, bytes_to_consume: bytes) -> Optional[Iterable[T]]:
-        """This method receives a parsable chunk of bytes and returns either a None if there is
+    def consume(self, batches_to_consume: List[bytes]) -> Optional[Iterable[T]]:
+        """TODO This method receives a parsable chunk of bytes and returns either a None if there is
         not enough chunks to return to the user yet (e.g. we haven't received all columns in a
         row yet), or a list of appropriate values gathered from one or more parsable chunks.
 
@@ -81,8 +82,9 @@ class _QueryResultRowReader(_Reader[QueryResultRow]):
     :class:`google.cloud.bigtable.byte_cursor._ByteCursor` passed in the constructor.
     """
 
-    def __init__(self):
-        self._values = []
+    def _parse_proto_rows(self, bytes_to_parse: bytes) -> Iterable[PBValue]:
+        proto_rows = ProtoRows.pb().FromString(bytes_to_parse)
+        return proto_rows.values
 
     def _construct_query_result_row(
         self, values: Sequence[PBValue], metadata: ProtoMetadata
@@ -101,35 +103,20 @@ class _QueryResultRowReader(_Reader[QueryResultRow]):
             result.add_field(column.column_name, parsed_value)
         return result
 
-    def _parse_proto_rows(self, bytes_to_parse: bytes) -> Iterable[PBValue]:
-        proto_rows = ProtoRows.pb().FromString(bytes_to_parse)
-        return proto_rows.values
-
     def consume(
-        self, bytes_to_consume: bytes, metadata: ProtoMetadata
+        self, batches_to_consume: List[bytes], metadata: ProtoMetadata
     ) -> Optional[Iterable[QueryResultRow]]:
-        if bytes_to_consume is None:
-            raise ValueError("bytes_to_consume shouldn't be None")
-
-        self._values.extend(self._parse_proto_rows(bytes_to_consume))
-
-        # The logic, not defined by mypy types, ensures that the value of
-        # "metadata" is never null at the time it is retrieved here
         num_columns = len(metadata.columns)
-
-        if len(self._values) < num_columns:
-            return None
-
         rows = []
-        for batch in batched(self._values, n=num_columns):
-            if len(batch) == num_columns:
-                rows.append(self._construct_query_result_row(batch, metadata))
-            else:
-                raise ValueError(
-                    "Server error, recieved bad number of values. "
-                    f"Expected {num_columns} got {len(batch)}."
-                )
-
-        self._values = []
+        for batch_bytes in batches_to_consume:
+            values = self._parse_proto_rows(batch_bytes)
+            for row_data in batched(values, n=num_columns):
+                if len(row_data) == num_columns:
+                    rows.append(self._construct_query_result_row(row_data, metadata))
+                else:
+                    raise ValueError(
+                        "Unexpected error, recieved bad number of values. "
+                        f"Expected {num_columns} got {len(row_data)}."
+                    )
 
         return rows
