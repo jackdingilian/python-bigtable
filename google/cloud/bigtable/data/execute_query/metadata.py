@@ -49,7 +49,7 @@ class SqlType:
         def from_pb_type(cls, pb_type: Optional[PBType] = None):
             return cls()
 
-        def _to_type_pb_dict(self) -> Dict[str, Any]:
+        def _to_type_pb_dict(self) -> Dict[str, PBType]:
             if not self.type_field_name:
                 raise NotImplementedError(
                     "Fill in expected_type and value_pb_dict_field_name"
@@ -97,7 +97,7 @@ class SqlType:
         def _to_value_pb_dict(self, value: Any):
             raise NotImplementedError("Struct is not supported as a query parameter")
 
-        def _to_type_pb_dict(self) -> Dict[str, Any]:
+        def _to_type_pb_dict(self) -> PBType:
             raise NotImplementedError("Struct is not supported as a query parameter")
 
         def __eq__(self, other: object):
@@ -146,7 +146,7 @@ class SqlType:
                 }
             }
 
-        def _to_type_pb_dict(self) -> Dict[str, Any]:
+        def _to_type_pb_dict(self) -> PBType:
             return {
                 "array_type": {"element_type": self.element_type._to_type_pb_dict()}
             }
@@ -181,7 +181,7 @@ class SqlType:
                 _pb_type_to_metadata_type(type_pb.map_type.value_type),
             )
 
-        def _to_type_pb_dict(self) -> Dict[str, Any]:
+        def _to_type_pb_dict(self) -> PBType:
             raise NotImplementedError("Map is not supported as a query parameter")
 
         def _to_value_pb_dict(self, value: Any):

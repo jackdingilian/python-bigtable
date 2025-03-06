@@ -26,14 +26,21 @@ import concurrent.futures
 from functools import partial
 from grpc import Channel
 from google.cloud.bigtable.data.execute_query.values import ExecuteQueryValueType
-from google.cloud.bigtable.data.execute_query.metadata import SqlType
+from google.cloud.bigtable.data.execute_query.metadata import (
+    SqlType,
+    _pb_metadata_to_metadata_types,
+)
 from google.cloud.bigtable.data.execute_query._parameters_formatting import (
     _format_execute_query_params,
+    _to_param_types,
 )
 from google.cloud.bigtable_v2.services.bigtable.transports.base import (
     DEFAULT_CLIENT_INFO,
 )
-from google.cloud.bigtable_v2.types.bigtable import PingAndWarmRequest
+from google.cloud.bigtable_v2.types.bigtable import (
+    PingAndWarmRequest,
+    PrepareQueryRequest,
+)
 from google.cloud.client import ClientWithProject
 from google.cloud.environment_vars import BIGTABLE_EMULATOR
 from google.api_core import retry as retries
@@ -401,6 +408,12 @@ class BigtableDataClient(ClientWithProject):
             ServiceUnavailable,
             Aborted,
         ),
+        prepare_operation_timeout: float = 60,
+        prepare_attempt_timeout: float | None = 20,
+        prepare_retryable_errors: Sequence[type[Exception]] = (
+            DeadlineExceeded,
+            ServiceUnavailable,
+        ),
     ) -> "ExecuteQueryIterator":
         """Executes an SQL query on an instance.
         Returns an iterator to asynchronously stream back columns from selected rows.
@@ -448,21 +461,49 @@ class BigtableDataClient(ClientWithProject):
             "ExecuteQuery is in preview and may change in the future.",
             category=RuntimeWarning,
         )
+        instance_name = self._gapic_client.instance_path(self.project, instance_id)
+        converted_param_types = _to_param_types(parameters, parameter_types)
+        prepare_request = PrepareQueryRequest()
+        prepare_request.instance_name = instance_name
+        prepare_request.app_profile_id = app_profile_id
+        prepare_request.query = query
+        prepare_request.param_types = converted_param_types
+        prepare_request.proto_format = {}
+        prepare_predicate = retries.if_exception_type(
+            *_get_retryable_errors(prepare_retryable_errors, self)
+        )
+        (prepare_operation_timeout, prepare_attempt_timeout) = _get_timeouts(
+            prepare_operation_timeout, prepare_attempt_timeout, self
+        )
+        prepare_sleep_generator = retries.exponential_sleep_generator(0.01, 2, 60)
+        target = partial(
+            self._gapic_client.prepare_query,
+            request=prepare_request,
+            timeout=prepare_attempt_timeout,
+            retry=None,
+        )
+        prepare_result = CrossSync._Sync_Impl.retry_target(
+            target,
+            prepare_predicate,
+            prepare_sleep_generator,
+            prepare_operation_timeout,
+            exception_factory=_retry_exception_factory,
+        )
+        prepare_metadata = _pb_metadata_to_metadata_types(prepare_result.metadata)
         retryable_excs = [_get_error_type(e) for e in retryable_errors]
         pb_params = _format_execute_query_params(parameters, parameter_types)
-        instance_name = self._gapic_client.instance_path(self.project, instance_id)
         request_body = {
             "instance_name": instance_name,
             "app_profile_id": app_profile_id,
-            "query": query,
+            "prepared_query": prepare_result.prepared_query,
             "params": pb_params,
-            "proto_format": {},
         }
         return CrossSync._Sync_Impl.ExecuteQueryIterator(
             self,
             instance_id,
             app_profile_id,
             request_body,
+            prepare_metadata,
             attempt_timeout,
             operation_timeout,
             retryable_excs=retryable_excs,
