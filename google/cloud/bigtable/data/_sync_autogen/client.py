@@ -25,6 +25,7 @@ import os
 import concurrent.futures
 from functools import partial
 from grpc import Channel
+from google.cloud.bigtable.data.execute_query._checksum import _CRC32C
 from google.cloud.bigtable.data.execute_query.values import ExecuteQueryValueType
 from google.cloud.bigtable.data.execute_query.metadata import (
     SqlType,
@@ -166,6 +167,7 @@ class BigtableDataClient(ClientWithProject):
             if not CrossSync._Sync_Impl.is_async
             else None
         )
+        self._crc32c = _CRC32C()
         if self._emulator_host is None:
             try:
                 self._start_background_channel_refresh()
@@ -504,6 +506,7 @@ class BigtableDataClient(ClientWithProject):
             app_profile_id,
             request_body,
             prepare_metadata,
+            self._crc32c,
             attempt_timeout,
             operation_timeout,
             retryable_excs=retryable_excs,

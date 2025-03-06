@@ -24,6 +24,7 @@ from google.cloud.bigtable.data._helpers import (
     _retry_exception_factory,
 )
 from google.cloud.bigtable.data.exceptions import InvalidExecuteQueryResponse
+from google.cloud.bigtable.data.execute_query._checksum import _CRC32C
 from google.cloud.bigtable.data.execute_query.values import QueryResultRow
 from google.cloud.bigtable.data.execute_query.metadata import Metadata
 from google.cloud.bigtable.data.execute_query._reader import (
@@ -56,6 +57,7 @@ class ExecuteQueryIterator:
         app_profile_id: Optional[str],
         request_body: Dict[str, Any],
         prepare_metadata: Metadata,
+        crc32c_implementation: _CRC32C,
         attempt_timeout: float | None,
         operation_timeout: float,
         req_metadata: Sequence[Tuple[str, str]] = (),
@@ -84,7 +86,7 @@ class ExecuteQueryIterator:
         self._instance_id = instance_id
         self._prepare_metadata = prepare_metadata
         self._final_metadata = None
-        self._byte_cursor = _ByteCursor()
+        self._byte_cursor = _ByteCursor(crc32c_implementation)
         self._reader: _Reader[QueryResultRow] = _QueryResultRowReader()
         self.has_received_token = False
         self._result_generator = self._next_impl()
