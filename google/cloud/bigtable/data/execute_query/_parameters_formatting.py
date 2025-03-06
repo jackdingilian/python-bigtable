@@ -20,12 +20,14 @@ from google.api_core.datetime_helpers import DatetimeWithNanoseconds
 from google.cloud.bigtable.data.exceptions import ParameterTypeInferenceFailed
 from google.cloud.bigtable.data.execute_query.metadata import SqlType
 from google.cloud.bigtable.data.execute_query.values import ExecuteQueryValueType
+from google.cloud.bigtable_v2.types import types
+from google.cloud.bigtable_v2.types.data import Value
 
 
 def _format_execute_query_params(
     params: Optional[Dict[str, ExecuteQueryValueType]],
     parameter_types: Optional[Dict[str, SqlType.Type]],
-) -> Any:
+) -> Dict[str, Value]:
     """
     Takes a dictionary of param_name -> param_value and optionally parameter types.
     If the parameters types are not provided, this function tries to infer them.
@@ -68,6 +70,16 @@ def _format_execute_query_params(
         result_values[key] = value_pb_dict
 
     return result_values
+
+
+def _format_param_types(param_types: Dict[str, SqlType.Type]) -> Dict[str, types.Type]:
+    """
+    TODO
+    """
+    formatted_types = {}
+    for param_name, param_type in param_types.items():
+        formatted_types[param_name] = param_type._to_type_pb_dict()
+    return formatted_types
 
 
 def _convert_value_to_pb_value_dict(

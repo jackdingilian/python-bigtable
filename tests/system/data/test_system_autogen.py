@@ -861,8 +861,18 @@ class TestSystem:
     @CrossSync._Sync_Impl.Retry(
         predicate=retry.if_exception_type(ClientError), initial=1, maximum=5
     )
+    def test_prepare_statement(self, client, instance_id):
+        client.prepare_statement("SELECT 1 AS a, 'foo' AS b", instance_id, {})
+
+    @pytest.mark.usefixtures("client")
+    @CrossSync._Sync_Impl.Retry(
+        predicate=retry.if_exception_type(ClientError), initial=1, maximum=5
+    )
     def test_execute_query_simple(self, client, table_id, instance_id):
-        result = client.execute_query("SELECT 1 AS a, 'foo' AS b", instance_id)
+        prepared_statement = client.prepare_statement(
+            "SELECT 1 AS a, 'foo' AS b", instance_id, {}
+        )
+        result = client.execute_query(prepared_statement)
         rows = [r for r in result]
         assert len(rows) == 1
         row = rows[0]
@@ -902,8 +912,14 @@ class TestSystem:
             ],
         }
         param_types = {
+            "stringParam": SqlType.String(),
+            "bytesParam": SqlType.Bytes(),
+            "int64Param": SqlType.Int64(),
             "float32Param": SqlType.Float32(),
             "float64Param": SqlType.Float64(),
+            "boolParam": SqlType.Bool(),
+            "tsParam": SqlType.Timestamp(),
+            "dateParam": SqlType.Date(),
             "byteArrayParam": SqlType.Array(SqlType.Bytes()),
             "stringArrayParam": SqlType.Array(SqlType.String()),
             "intArrayParam": SqlType.Array(SqlType.Int64()),
@@ -913,9 +929,8 @@ class TestSystem:
             "tsArrayParam": SqlType.Array(SqlType.Timestamp()),
             "dateArrayParam": SqlType.Array(SqlType.Date()),
         }
-        result = client.execute_query(
-            query, instance_id, parameters=parameters, parameter_types=param_types
-        )
+        prepared_statement = client.prepare_statement(query, instance_id, param_types)
+        result = client.execute_query(prepared_statement, parameters=parameters)
         rows = [r for r in result]
         assert len(rows) == 1
         row = rows[0]

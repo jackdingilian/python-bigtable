@@ -12,12 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from __future__ import annotations
+from typing import Dict
 
 import grpc
 import asyncio
 import re
 import sys
 
+from google.cloud.bigtable.data.execute_query.metadata import SqlType
+from google.cloud.bigtable.data.execute_query.prepared_statement import (
+    PreparedStatement,
+)
+from google.cloud.bigtable_v2.types.data import ProtoFormat
 import pytest
 import mock
 
@@ -32,9 +38,27 @@ from google.cloud.bigtable.data import TABLE_DEFAULT
 
 from google.cloud.bigtable.data.read_modify_write_rules import IncrementRule
 from google.cloud.bigtable.data.read_modify_write_rules import AppendValueRule
-from google.cloud.bigtable_v2.types.bigtable import ExecuteQueryResponse
+from google.cloud.bigtable_v2.types.bigtable import (
+    ExecuteQueryResponse,
+    PrepareQueryRequest,
+)
 
 from google.cloud.bigtable.data._cross_sync import CrossSync
+from tests.unit.data.execute_query.sql_helpers import (
+    array_type,
+    bool_type,
+    bytes_type,
+    column,
+    date_type,
+    float32_type,
+    float64_type,
+    int64_type,
+    metadata,
+    prepare_request,
+    prepare_response,
+    str_type,
+    ts_type,
+)
 
 if CrossSync.is_async:
     from google.api_core import grpc_helpers_async
@@ -3006,8 +3030,15 @@ class TestReadModifyWriteRowAsync:
 
 @CrossSync.convert_class("TestExecuteQuery")
 class TestExecuteQueryAsync:
-    TABLE_NAME = "TABLE_NAME"
-    INSTANCE_NAME = "INSTANCE_NAME"
+    PREPARED_STATEMENT = PreparedStatement(
+        instance_id="test-instance",
+        prepare_query_response=prepare_response(
+            prepared_query=b"foo",
+            metadata=metadata(column("a", str_type()), column("b", int64_type())),
+        ),
+        param_types={},
+        prepare_query_request=prepare_request(),
+    )
 
     @CrossSync.convert
     def _make_client(self, *args, **kwargs):
@@ -3037,23 +3068,6 @@ class TestExecuteQueryAsync:
                 return self.__next__()
 
         return MockStream(sample_list)
-
-    def resonse_with_metadata(self):
-        from google.cloud.bigtable_v2.types.bigtable import ExecuteQueryResponse
-
-        schema = {"a": "string_type", "b": "int64_type"}
-        return ExecuteQueryResponse(
-            {
-                "metadata": {
-                    "proto_schema": {
-                        "columns": [
-                            {"name": name, "type_": {_type: {}}}
-                            for name, _type in schema.items()
-                        ]
-                    }
-                }
-            }
-        )
 
     def resonse_with_result(self, *args, resume_token=None):
         from google.cloud.bigtable_v2.types.data import ProtoRows, Value as PBValue
@@ -3093,7 +3107,6 @@ class TestExecuteQueryAsync:
     @CrossSync.pytest
     async def test_execute_query(self):
         values = [
-            self.resonse_with_metadata(),
             self.resonse_with_result("test"),
             self.resonse_with_result(8, resume_token=b"r1"),
             self.resonse_with_result("test2"),
@@ -3107,9 +3120,7 @@ class TestExecuteQueryAsync:
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
 
-            result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
-            )
+            result = await client.execute_query(self.PREPARED_STATEMENT)
             results = [r async for r in result]
             assert results[0]["a"] == "test"
             assert results[0]["b"] == 8
@@ -3122,7 +3133,6 @@ class TestExecuteQueryAsync:
     @CrossSync.pytest
     async def test_execute_query_with_params(self):
         values = [
-            self.resonse_with_metadata(),
             self.resonse_with_result("test2"),
             self.resonse_with_result(9, resume_token=b"r2"),
         ]
@@ -3131,9 +3141,19 @@ class TestExecuteQueryAsync:
             client._gapic_client, "execute_query", CrossSync.Mock()
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
+            prepared_statement = PreparedStatement(
+                instance_id="test-instance",
+                prepare_query_response=prepare_response(
+                    prepared_query=b"foo",
+                    metadata=metadata(
+                        column("a", str_type()), column("b", int64_type())
+                    ),
+                ),
+                param_types={"b": int64_type()},
+                prepare_query_request=prepare_request(),
+            )
             result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME} WHERE b=@b",
-                self.INSTANCE_NAME,
+                prepared_statement,
                 parameters={"b": 9},
             )
             results = [r async for r in result]
@@ -3148,7 +3168,6 @@ class TestExecuteQueryAsync:
 
         values = [
             DeadlineExceeded(""),
-            self.resonse_with_metadata(),
             self.resonse_with_result("test"),
             self.resonse_with_result(8, resume_token=b"r1"),
             self.resonse_with_result("test2"),
@@ -3161,9 +3180,7 @@ class TestExecuteQueryAsync:
             client._gapic_client, "execute_query", CrossSync.Mock()
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
-            result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
-            )
+            result = await client.execute_query(self.PREPARED_STATEMENT)
             results = [r async for r in result]
             assert len(results) == 3
             assert execute_query_mock.call_count == 2
@@ -3173,9 +3190,7 @@ class TestExecuteQueryAsync:
         from google.api_core.exceptions import DeadlineExceeded
 
         values = [
-            self.resonse_with_metadata(),
             DeadlineExceeded(""),
-            self.resonse_with_metadata(),
             self.resonse_with_result("test"),
             self.resonse_with_result(8, resume_token=b"r1"),
             self.resonse_with_result("test2"),
@@ -3188,9 +3203,7 @@ class TestExecuteQueryAsync:
             client._gapic_client, "execute_query", CrossSync.Mock()
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
-            result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
-            )
+            result = await client.execute_query(self.PREPARED_STATEMENT)
             results = [r async for r in result]
             assert len(results) == 3
             assert execute_query_mock.call_count == 2
@@ -3203,7 +3216,6 @@ class TestExecuteQueryAsync:
         from google.api_core.exceptions import DeadlineExceeded
 
         values = [
-            self.resonse_with_metadata(),
             self.resonse_with_result("test"),
             self.resonse_with_result(8, resume_token=b"r1"),
             DeadlineExceeded(""),
@@ -3219,9 +3231,7 @@ class TestExecuteQueryAsync:
             client._gapic_client, "execute_query", CrossSync.Mock()
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
-            result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
-            )
+            result = await client.execute_query(self.PREPARED_STATEMENT)
             results = [r async for r in result]
             assert results[0]["a"] == "test"
             assert results[0]["b"] == 8
@@ -3245,7 +3255,6 @@ class TestExecuteQueryAsync:
     @CrossSync.pytest
     async def test_execute_query_retryable_error(self, exception):
         values = [
-            self.resonse_with_metadata(),
             self.resonse_with_result("test", resume_token=b"t1"),
             exception,
             self.resonse_with_result(8, resume_token=b"t2"),
@@ -3256,9 +3265,7 @@ class TestExecuteQueryAsync:
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
 
-            result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
-            )
+            result = await client.execute_query(self.PREPARED_STATEMENT)
             results = [r async for r in result]
             assert len(results) == 1
             assert execute_query_mock.call_count == 2
@@ -3269,7 +3276,6 @@ class TestExecuteQueryAsync:
     @CrossSync.pytest
     async def test_execute_query_retry_partial_row(self):
         values = [
-            self.resonse_with_metadata(),
             self.resonse_with_result("test", resume_token=b"t1"),
             core_exceptions.DeadlineExceeded(""),
             self.resonse_with_result(8, resume_token=b"t2"),
@@ -3280,9 +3286,7 @@ class TestExecuteQueryAsync:
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
 
-            result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
-            )
+            result = await client.execute_query(self.PREPARED_STATEMENT)
             results = [r async for r in result]
             assert results[0]["a"] == "test"
             assert results[0]["b"] == 8
@@ -3312,7 +3316,6 @@ class TestExecuteQueryAsync:
     @CrossSync.pytest
     async def test_execute_query_non_retryable(self, ExceptionType):
         values = [
-            self.resonse_with_metadata(),
             self.resonse_with_result("test"),
             self.resonse_with_result(8, resume_token=b"r1"),
             ExceptionType(""),
@@ -3327,9 +3330,7 @@ class TestExecuteQueryAsync:
         ) as execute_query_mock:
             execute_query_mock.return_value = self._make_gapic_stream(values)
 
-            result = await client.execute_query(
-                f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
-            )
+            result = await client.execute_query(self.PREPARED_STATEMENT)
             r = await CrossSync.next(result)
             assert r["a"] == "test"
             assert r["b"] == 8
@@ -3342,23 +3343,179 @@ class TestExecuteQueryAsync:
             resume_tokens = [r.resume_token for r in requests if r.resume_token]
             assert resume_tokens == []
 
+
+@CrossSync.convert_class("TestPrepareQuery")
+class TestPrepareQueryAsync:
+    @CrossSync.convert
+    def _make_client(self, *args, **kwargs):
+        return CrossSync.TestBigtableDataClient._make_client(*args, **kwargs)
+
     @CrossSync.pytest
-    async def test_execute_query_metadata_received_multiple_times_detected(self):
-        values = [
-            self.resonse_with_metadata(),
-            self.resonse_with_metadata(),
-        ]
-        client = self._make_client()
-        with mock.patch.object(
-            client._gapic_client, "execute_query", CrossSync.Mock()
-        ) as execute_query_mock:
-            execute_query_mock.return_value = self._make_gapic_stream(values)
-            with pytest.raises(
-                Exception, match="Invalid ExecuteQuery response received"
-            ):
-                [
-                    r
-                    async for r in await client.execute_query(
-                        f"SELECT a, b FROM {self.TABLE_NAME}", self.INSTANCE_NAME
+    async def test_prepare_query_no_params(self):
+        """Test mutations with no errors"""
+        expected_attempt_timeout = 19
+        async with self._make_client(project="project") as client:
+            with mock.patch.object(client._gapic_client, "prepare_query") as mock_gapic:
+                mock_gapic.return_value = prepare_response(
+                    b"foo", metadata=metadata(column("strCol", str_type()))
+                )
+                prepared_statement: PreparedStatement = await client.prepare_statement(
+                    "SELECT * FROM table",
+                    "instance",
+                    {},
+                    app_profile_id="test",
+                    attempt_timeout=expected_attempt_timeout,
+                )
+
+                assert mock_gapic.call_count == 1
+                kwargs = mock_gapic.call_args_list[0].kwargs
+                request: PrepareQueryRequest = kwargs["request"]
+                assert request.instance_name == "projects/project/instances/instance"
+                assert request.query == "SELECT * FROM table"
+                assert len(request.param_types) == 0
+                assert request.proto_format == ProtoFormat()
+
+                assert prepared_statement._instance_id() == "instance"
+                assert (
+                    prepared_statement._instance_name()
+                    == "projects/project/instances/instance"
+                )
+                assert prepared_statement._app_profile_id() == "test"
+                assert (
+                    prepared_statement._prepare_query_response()._prepared_query()
+                    == b"foo"
+                )
+                assert len(prepared_statement._param_types()) == 0
+
+                assert kwargs["timeout"] == expected_attempt_timeout
+                # make sure gapic layer is not retrying
+                assert kwargs["retry"] is None
+
+    @CrossSync.pytest
+    async def test_prepare_query_with_all_valid_param_types(self):
+        """Test mutations with no errors"""
+        expected_attempt_timeout = 19
+        async with self._make_client(project="project") as client:
+            with mock.patch.object(client._gapic_client, "prepare_query") as mock_gapic:
+                mock_gapic.return_value = prepare_response(
+                    b"foo", metadata=metadata(column("strCol", str_type()))
+                )
+                param_types: Dict[str, SqlType] = {
+                    "strParam": SqlType.String(),
+                    "bytesParam": SqlType.Bytes(),
+                    "int64Param": SqlType.Int64(),
+                    "float64Param": SqlType.Float64(),
+                    "float32Param": SqlType.Float32(),
+                    "boolParam": SqlType.Bool(),
+                    "tsParam": SqlType.Timestamp(),
+                    "dateParam": SqlType.Date(),
+                    "strArrayParam": SqlType.Array(SqlType.String()),
+                    "byteArrayParam": SqlType.Array(SqlType.Bytes()),
+                    "int64ArrayParam": SqlType.Array(SqlType.Int64()),
+                    "float64ArrayParam": SqlType.Array(SqlType.Float64()),
+                    "float32ArrayParam": SqlType.Array(SqlType.Float32()),
+                    "boolArrayParam": SqlType.Array(SqlType.Bool()),
+                    "tsArrayParam": SqlType.Array(SqlType.Timestamp()),
+                    "dateArrayParam": SqlType.Array(SqlType.Date()),
+                }
+                prepared_statement: PreparedStatement = await client.prepare_statement(
+                    "SELECT * FROM table",
+                    "instance",
+                    parameter_types=param_types,
+                    app_profile_id="test",
+                    attempt_timeout=expected_attempt_timeout,
+                )
+
+                assert mock_gapic.call_count == 1
+                kwargs = mock_gapic.call_args_list[0].kwargs
+                request: PrepareQueryRequest = kwargs["request"]
+                assert request.instance_name == "projects/project/instances/instance"
+                assert request.query == "SELECT * FROM table"
+                assert len(request.param_types) == 16
+                assert request.param_types == {
+                    "strParam": str_type(),
+                    "bytesParam": bytes_type(),
+                    "int64Param": int64_type(),
+                    "float64Param": float64_type(),
+                    "float32Param": float32_type(),
+                    "boolParam": bool_type(),
+                    "tsParam": ts_type(),
+                    "dateParam": date_type(),
+                    "strArrayParam": array_type(str_type()),
+                    "byteArrayParam": array_type(bytes_type()),
+                    "int64ArrayParam": array_type(int64_type()),
+                    "float64ArrayParam": array_type(float64_type()),
+                    "float32ArrayParam": array_type(float32_type()),
+                    "boolArrayParam": array_type(bool_type()),
+                    "tsArrayParam": array_type(ts_type()),
+                    "dateArrayParam": array_type(date_type()),
+                }
+                assert request.proto_format == ProtoFormat()
+
+                assert prepared_statement._instance_id() == "instance"
+                assert (
+                    prepared_statement._instance_name()
+                    == "projects/project/instances/instance"
+                )
+                assert prepared_statement._app_profile_id() == "test"
+                assert (
+                    prepared_statement._prepare_query_response()._prepared_query()
+                    == b"foo"
+                )
+                assert len(prepared_statement._param_types()) == 16
+                assert prepared_statement._param_types() == param_types
+
+                assert kwargs["timeout"] == expected_attempt_timeout
+                # make sure gapic layer is not retrying
+                assert kwargs["retry"] is None
+
+    @pytest.mark.parametrize(
+        "retryable_exception",
+        [
+            core_exceptions.DeadlineExceeded,
+            core_exceptions.ServiceUnavailable,
+            core_exceptions.Aborted,
+        ],
+    )
+    @CrossSync.pytest
+    async def test_prepare_query_retryable_errors(self, retryable_exception):
+        from google.api_core.exceptions import DeadlineExceeded
+        from google.cloud.bigtable.data.exceptions import RetryExceptionGroup
+
+        async with self._make_client(project="project") as client:
+            with mock.patch.object(client._gapic_client, "prepare_query") as mock_gapic:
+                mock_gapic.side_effect = retryable_exception("mock")
+                with pytest.raises(DeadlineExceeded) as e:
+                    await client.prepare_statement(
+                        "SELECT * FROM table",
+                        "instance",
+                        {},
+                        app_profile_id="test",
+                        operation_timeout=0.01,
                     )
-                ]
+                cause = e.value.__cause__
+                assert isinstance(cause, RetryExceptionGroup)
+                assert isinstance(cause.exceptions[0], retryable_exception)
+
+    @pytest.mark.parametrize(
+        "non_retryable_exception",
+        [
+            core_exceptions.OutOfRange,
+            core_exceptions.NotFound,
+            core_exceptions.FailedPrecondition,
+            RuntimeError,
+            ValueError,
+        ],
+    )
+    @CrossSync.pytest
+    async def test_prepare_query_rnon_retryable_errors(self, non_retryable_exception):
+        async with self._make_client(project="project") as client:
+            with mock.patch.object(client._gapic_client, "prepare_query") as mock_gapic:
+                mock_gapic.side_effect = non_retryable_exception("mock")
+                with pytest.raises(non_retryable_exception):
+                    await client.prepare_statement(
+                        "SELECT * FROM table",
+                        "instance",
+                        {},
+                        app_profile_id="test",
+                    )

@@ -1055,8 +1055,19 @@ class TestSystemAsync:
     @CrossSync.Retry(
         predicate=retry.if_exception_type(ClientError), initial=1, maximum=5
     )
+    async def test_prepare_statement(self, client, instance_id):
+        await client.prepare_statement("SELECT 1 AS a, 'foo' AS b", instance_id, {})
+
+    @CrossSync.pytest
+    @pytest.mark.usefixtures("client")
+    @CrossSync.Retry(
+        predicate=retry.if_exception_type(ClientError), initial=1, maximum=5
+    )
     async def test_execute_query_simple(self, client, table_id, instance_id):
-        result = await client.execute_query("SELECT 1 AS a, 'foo' AS b", instance_id)
+        prepared_statement = await client.prepare_statement(
+            "SELECT 1 AS a, 'foo' AS b", instance_id, {}
+        )
+        result = await client.execute_query(prepared_statement)
         rows = [r async for r in result]
         assert len(rows) == 1
         row = rows[0]
@@ -1105,8 +1116,14 @@ class TestSystemAsync:
             ],
         }
         param_types = {
+            "stringParam": SqlType.String(),
+            "bytesParam": SqlType.Bytes(),
+            "int64Param": SqlType.Int64(),
             "float32Param": SqlType.Float32(),
             "float64Param": SqlType.Float64(),
+            "boolParam": SqlType.Bool(),
+            "tsParam": SqlType.Timestamp(),
+            "dateParam": SqlType.Date(),
             "byteArrayParam": SqlType.Array(SqlType.Bytes()),
             "stringArrayParam": SqlType.Array(SqlType.String()),
             "intArrayParam": SqlType.Array(SqlType.Int64()),
@@ -1116,9 +1133,11 @@ class TestSystemAsync:
             "tsArrayParam": SqlType.Array(SqlType.Timestamp()),
             "dateArrayParam": SqlType.Array(SqlType.Date()),
         }
-        result = await client.execute_query(
-            query, instance_id, parameters=parameters, parameter_types=param_types
+
+        prepared_statement = await client.prepare_statement(
+            query, instance_id, param_types
         )
+        result = await client.execute_query(prepared_statement, parameters=parameters)
         rows = [r async for r in result]
         assert len(rows) == 1
         row = rows[0]

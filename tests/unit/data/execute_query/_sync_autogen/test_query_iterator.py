@@ -17,14 +17,34 @@
 
 import pytest
 import concurrent.futures
+from google.cloud.bigtable.data.execute_query.prepared_statement import (
+    PreparedStatement,
+)
 from google.cloud.bigtable_v2.types.bigtable import ExecuteQueryResponse
-from .._testing import TYPE_INT, split_bytes_into_chunks, proto_rows_bytes
+from ..sql_helpers import (
+    prepare_request,
+    prepare_response,
+    metadata,
+    column,
+    int64_type,
+    split_bytes_into_chunks,
+    proto_rows_bytes,
+)
 from google.cloud.bigtable.data._cross_sync import CrossSync
 
 try:
     from unittest import mock
 except ImportError:
     import mock
+prepared_statement = PreparedStatement(
+    instance_id="test-instance",
+    prepare_query_response=prepare_response(
+        b"foo",
+        metadata=metadata(column("test1", int64_type()), column("test2", int64_type())),
+    ),
+    param_types={},
+    prepare_query_request=prepare_request(),
+)
 
 
 class MockIterator:
@@ -67,16 +87,6 @@ class TestQueryIterator:
             proto_rows[2],
         ]
         stream = [
-            ExecuteQueryResponse(
-                metadata={
-                    "proto_schema": {
-                        "columns": [
-                            {"name": "test1", "type_": TYPE_INT},
-                            {"name": "test2", "type_": TYPE_INT},
-                        ]
-                    }
-                }
-            ),
             ExecuteQueryResponse(
                 results={"proto_rows_batch": {"batch_data": messages[0]}}
             ),
@@ -121,9 +131,8 @@ class TestQueryIterator:
         ):
             iterator = self._make_one(
                 client=client_mock,
-                instance_id="test-instance",
-                app_profile_id="test_profile",
-                request_body={},
+                prepared_statement=prepared_statement,
+                protobuf_parameters={},
                 attempt_timeout=10,
                 operation_timeout=10,
                 req_metadata=(),
@@ -138,7 +147,7 @@ class TestQueryIterator:
         client_mock._remove_instance_registration.assert_called_once()
         assert mock_async_iterator.idx == len(proto_byte_stream)
 
-    def test_iterator_awaits_metadata(self, proto_byte_stream):
+    def test_iterator_returns_metadata_after_data(self, proto_byte_stream):
         client_mock = mock.Mock()
         client_mock._register_instance = CrossSync._Sync_Impl.Mock()
         client_mock._remove_instance_registration = CrossSync._Sync_Impl.Mock()
@@ -151,13 +160,14 @@ class TestQueryIterator:
         ):
             iterator = self._make_one(
                 client=client_mock,
-                instance_id="test-instance",
-                app_profile_id="test_profile",
-                request_body={},
+                prepared_statement=prepared_statement,
+                protobuf_parameters={},
                 attempt_timeout=10,
                 operation_timeout=10,
                 req_metadata=(),
                 retryable_excs=[],
             )
-        iterator.metadata()
-        assert mock_async_iterator.idx == 1
+        assert iterator.metadata is None
+        CrossSync._Sync_Impl.next(iterator)
+        assert len(iterator.metadata) == 2
+        assert mock_async_iterator.idx == 2
