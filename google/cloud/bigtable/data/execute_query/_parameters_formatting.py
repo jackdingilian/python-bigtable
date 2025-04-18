@@ -95,6 +95,14 @@ def _to_param_types(
             formatted_types[param_key] = _detect_type(param_value)._to_type_pb_dict()
     return formatted_types
 
+def _param_types_to_pb(param_types: Optional[Dict[str, SqlType.Type]]) -> Dict[str, Dict[str, Any]]: 
+    if not param_types:
+        return {}
+    
+    proto_param_types = {}
+    for param_name, param_sql_type in param_types.entries():
+        proto_param_types[param_name] = param_sql_type._to_type_pb_dict()
+    return proto_param_types
 
 def _convert_value_to_pb_value_dict(
     value: ExecuteQueryValueType, param_type: SqlType.Type

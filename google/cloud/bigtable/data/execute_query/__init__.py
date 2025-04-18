@@ -22,6 +22,12 @@ from google.cloud.bigtable.data.execute_query.metadata import (
     Metadata,
     SqlType,
 )
+from google.cloud.bigtable.data.execute_query._async.prepared_statement import (
+    PreparedStatementAsync,
+)
+from google.cloud.bigtable.data.execute_query._sync_autogen.prepared_statement import (
+    PreparedStatement,
+)
 from google.cloud.bigtable.data.execute_query.values import (
     ExecuteQueryValueType,
     QueryResultRow,
@@ -31,6 +37,8 @@ from google.cloud.bigtable.data._cross_sync import CrossSync
 
 CrossSync.add_mapping("ExecuteQueryIterator", ExecuteQueryIteratorAsync)
 CrossSync._Sync_Impl.add_mapping("ExecuteQueryIterator", ExecuteQueryIterator)
+CrossSync.add_mapping("PreparedStatement", PreparedStatementAsync)
+CrossSync._Sync_Impl.add_mapping("PreparedStatement", PreparedStatement)
 
 __all__ = [
     "ExecuteQueryValueType",
@@ -40,4 +48,6 @@ __all__ = [
     "Metadata",
     "ExecuteQueryIteratorAsync",
     "ExecuteQueryIterator",
+    "PreparedStatementAsync",
+    "PreparedStatement",
 ]

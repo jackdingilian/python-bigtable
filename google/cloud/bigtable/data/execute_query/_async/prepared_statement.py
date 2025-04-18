@@ -1,0 +1,366 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from datetime import datetime, timedelta, timezone
+import enum
+from functools import partial
+from typing import Any, Dict, TYPE_CHECKING, Optional, Sequence
+import uuid
+
+import concurrent
+from google.api_core import retry as retries
+from google.cloud.bigtable.data._cross_sync import CrossSync
+from google.cloud.bigtable.data._helpers import _align_timeouts, _get_error_type, _retry_exception_factory
+from google.cloud.bigtable.data.execute_query.metadata import Metadata, _pb_metadata_to_metadata_types
+from google.cloud.bigtable_v2.types.bigtable import PrepareQueryResponse
+
+if TYPE_CHECKING:
+    if CrossSync.is_async:
+        from google.cloud.bigtable.data import BigtableDataClientAsync as DataClientType
+    else:
+        from google.cloud.bigtable.data import BigtableDataClient as DataClientType
+
+__CROSS_SYNC_OUTPUT__ = (
+    "google.cloud.bigtable.data.execute_query._sync_autogen.prepared_statement"
+)
+
+EXPIRY_REFRESH_WINDOW = timedelta(seconds=1)
+
+class _UpdateType(enum.Enum):
+    """Internal enum to represent the type of state update needed."""
+    # Makes the background plan the current plan
+    PROMOTE_BACKGROUND_PLAN = enum.auto()
+    # Starts a new background refresh. Does not modify current plan.
+    START_NEW_BACKGROUND_REFRESH = enum.auto()
+    # Removes the current plan and updates it as necessary.
+    # If there is an ongoing background refresh, makes that the current plan.
+    # Otherwise starts a new request and uses that.
+    EXPIRE_CURRENT_PLAN = enum.auto()
+
+class PrepareResponse:
+    """
+    Represents the processed response from a PrepareQuery RPC.
+
+    Contains the prepared query bytes, result set metadata, and the validity
+    timestamp for the prepared plan.
+    """
+    def __init__(
+        self,
+        prepared_query: bytes,
+        result_set_metadata: Metadata,
+        valid_until: datetime
+    ) -> None:
+        """
+        Initializes a PrepareResponse instance.
+
+        Args:
+            prepared_query (bytes): The opaque prepared query bytes returned by the server.
+            result_set_metadata (Metadata): Parsed metadata describing the results.
+            valid_until (datetime): The timestamp until which this prepared query is valid.
+        """
+        self._prepared_query = prepared_query
+        self._result_set_metadata = result_set_metadata
+        self._valid_until = valid_until
+
+    @classmethod
+    def from_pb(cls, prepare_pb: PrepareQueryResponse) -> "PrepareResponse":
+        """
+        Creates a PrepareResponse object from a protobuf response.
+
+        Args:
+            prepare_pb (PrepareQueryResponse): The protobuf response from the PrepareQuery RPC.
+
+        Returns:
+            PrepareResponse: An initialized PrepareResponse instance.
+        """
+        # TODO handle variation in pb types (if necessary)
+        valid_until_datetime = prepare_pb.valid_until
+        parsed_metadata = _pb_metadata_to_metadata_types(prepare_pb.metadata)
+        return cls(prepare_pb.prepared_query, parsed_metadata, valid_until_datetime)
+
+    @property
+    def prepared_query(self) -> bytes:
+        """The opaque bytes representing the prepared query."""
+        return self._prepared_query
+
+    @property
+    def metadata(self) -> Metadata:
+        """The metadata describing the expected result set."""
+        return self._result_set_metadata
+
+    @property
+    def valid_until(self) -> datetime:
+        """The timestamp indicating when this prepared query expires."""
+        return self._valid_until
+
+
+class PrepareQueryVersion:
+    """Internal class representing a version of a prepared query plan.
+
+    Holds the future containing the PrepareResponse and a unique version ID.
+    """
+    def __init__(self, prepare_response: CrossSync.Future[PrepareResponse]):
+        """
+        Args:
+            prepare_response (CrossSync.Future[PrepareResponse]): A future that will
+                resolve to the PrepareResponse.
+        """
+        self._prepare_response = prepare_response
+        # Internal version ID to track specific plan instances
+        self._version = uuid.uuid4().int
+
+    @property
+    def prepare_response(self) -> CrossSync.Future[PrepareResponse]:
+        """Future resolving to the PrepareResponse for this version."""
+        return self._prepare_response
+
+    @property
+    def version(self) -> int:
+        """Internal unique identifier for this plan version."""
+        return self._version
+
+class _PrepareState:
+    """Internal class holding the current and background refreshing prepared query plans."""
+    def __init__(
+        self,
+        current_plan: PrepareQueryVersion,
+        background_refreshing_plan: Optional[PrepareQueryVersion]=None
+    ):
+        """
+        Args:
+            current_plan (PrepareQueryVersion): The currently active plan.
+            background_refreshing_plan (Optional[PrepareQueryVersion]): A plan being
+                refreshed in the background, if any.
+        """
+        self._current_plan = current_plan
+        self._background_refreshing_plan = background_refreshing_plan
+
+    @property
+    def current_plan(self) -> PrepareQueryVersion:
+        """The currently active prepared query plan."""
+        return self._current_plan
+
+    @property
+    def has_background_refresh(self) -> bool:
+        """Returns True if a background refresh is in progress."""
+        return self._background_refreshing_plan is not None # Corrected property name
+
+    @property
+    def background_refreshing_plan(self) -> Optional[PrepareQueryVersion]:
+        """The plan being refreshed in the background, or None."""
+        return self._background_refreshing_plan
+
+    def with_background_plan(self, new_background_plan: PrepareQueryVersion) -> "_PrepareState":
+        """Returns a new state with the specified background plan added."""
+        return _PrepareState(self._current_plan, new_background_plan)
+
+    def promote(self) -> "_PrepareState":
+        """Returns a new state where the background plan becomes the current plan."""
+        if not self._background_refreshing_plan:
+             raise ValueError("Cannot promote background plan when none exists.") # Defensive check
+        return _PrepareState(self.background_refreshing_plan)
+
+def _should_start_background_refresh(current_plan: PrepareQueryVersion) -> bool:
+    """Checks if a background refresh should be initiated based on expiry time."""
+    prepare_future = current_plan.prepare_response
+    # Don't start if the current plan isn't even ready or has failed
+    if not prepare_future.done() or prepare_future.exception():
+        return False
+
+    valid_until = prepare_future.result().valid_until
+    should_background_refresh_at = valid_until - EXPIRY_REFRESH_WINDOW
+    now_utc = datetime.now(timezone.utc)
+    # Ensure comparison is timezone-aware (UTC)
+    should_background_refresh_at_utc = should_background_refresh_at.astimezone(timezone.utc)
+    return now_utc > should_background_refresh_at_utc
+
+
+@CrossSync.convert_class(sync_name="PreparedStatement")
+class PreparedStatementAsync:
+    def __init__(
+        self, 
+        client: "DataClientType",
+        instance_id: str,
+        app_profile_id: str | None,
+        prepare_request: Dict[str, Any],
+        prepare_operation_timeout: float,
+        prepare_attempt_timeout: float,
+        prepare_retryable_errors: Sequence[type[Exception]],
+        initial_plan_pb: PrepareQueryResponse,
+        executor: concurrent.futures.ThreadPoolExecutor | None = None,
+    ) -> None:
+        """
+        Initializes a PreparedStatementAsync instance.
+
+        This should never be constructed directly by users, it should only be created via the client.
+
+        Args:
+            client: The Bigtable data client instance.
+            instance_id: The target Bigtable instance ID.
+            app_profile_id: The application profile ID to use for requests.
+            prepare_request: The dictionary representing the PrepareQueryRequest protobuf.
+            prepare_operation_timeout: Total timeout for the prepare operation including retries.
+            prepare_attempt_timeout: Timeout for each individual prepare attempt.
+            prepare_retryable_errors: Sequence of exception types that trigger a retry for prepare.
+            initial_plan_pb: The protobuf response from the initial PrepareQuery RPC.
+            executor: Optional thread pool executor for background tasks in sync mode.
+        """
+        self._client = client
+        self._instance_id = instance_id
+        self._app_profile_id = app_profile_id
+        self._prepare_request = prepare_request
+        resolved_future: CrossSync.Future[PrepareResponse] = CrossSync.Future()
+        resolved_future.set_result(PrepareResponse.from_pb(initial_plan_pb))
+        initial_plan_version = PrepareQueryVersion(resolved_future)
+        self._state = _PrepareState(initial_plan_version)
+        self._refresh_lock = CrossSync.Lock()
+        self._prepare_operation_timeout = prepare_operation_timeout
+        self._prepare_attempt_timeout = prepare_attempt_timeout
+        self._prepare_retryable_errors = prepare_retryable_errors
+        self._executor = executor
+    
+    @property
+    def instance_id(self):
+        """The Bigtable instance ID associated with this prepared statement."""
+        return self._instance_id
+    
+    @property
+    def app_profile_id(self):
+        """The application profile ID used for this prepared statement."""
+        return self._app_profile_id
+
+    @CrossSync.convert
+    async def _get_latest_plan(self) -> PrepareQueryVersion:
+        """
+        Retrieves the latest valid prepared query plan version.
+
+        This method handles updating plans when necessary:
+        1. If the current plan is nearing expiry and no background refresh is active,
+           it initiates a background refresh.
+        2. If a background refresh has completed successfully, it promotes the
+           background plan to become the new current plan.
+        3. Otherwise, it returns the currently active plan.
+
+        Returns:
+            PrepareQueryVersion: The latest available plan version. The associated
+            `prepare_response` future might still be running if it represents a
+            plan fetched in the background or one currently being used. Callers
+            should check the future's status or `await` it as needed.
+        """
+        local_plan_state = self._state
+        # if we are close to expiry and there is no ongoing bacground refresh then start one 
+        if _should_start_background_refresh(local_plan_state.current_plan) and not local_plan_state.background_refreshing_plan:
+            return await self._maybe_update_state(local_plan_state, _UpdateType.START_NEW_BACKGROUND_REFRESH)
+        # If there is a completed background refresh, promot it
+        if local_plan_state.background_refreshing_plan and local_plan_state.background_refreshing_plan.prepare_response.done():
+            return await self._maybe_update_state(local_plan_state, _UpdateType.PROMOTE_BACKGROUND_PLAN)
+        return local_plan_state.current_plan
+    
+    @CrossSync.convert
+    async def _maybe_update_state(self, plan_state_before_lock: _PrepareState, update_type: _UpdateType) -> PrepareQueryVersion:
+        # Note that this should never recurse because the lock is not re-entrant.
+        # Anything the modifies _state MUST happen in this method, to guarantee it is under the lock.
+        async with self._refresh_lock:
+            has_updated_already = self._state.current_plan.version != plan_state_before_lock.current_plan.version
+            if has_updated_already:
+                return self._state.current_plan
+            if update_type == _UpdateType.START_NEW_BACKGROUND_REFRESH:
+                # If background refresh exists then we no longer need to start a refresh
+                if self._state.background_refreshing_plan:
+                    return self._state.current_plan
+                background_refresh = self._start_new_request()
+                updated_version = PrepareQueryVersion(background_refresh)
+                self._state = self._state.with_background_plan(updated_version)
+            elif update_type == _UpdateType.EXPIRE_CURRENT_PLAN:
+                # If the current plan has expired and there is already an ongoing background refresh
+                # then promote the background refresh and return it
+                if self._state.background_refreshing_plan:
+                    self._state = self._state.promote()
+                else:
+                    # otherwise start a new request and immediately promote it 
+                    background_refresh = self._start_new_request()
+                    latest_plan_version = PrepareQueryVersion(background_refresh)
+                    self._state = _PrepareState(latest_plan_version)
+            elif update_type == _UpdateType.PROMOTE_BACKGROUND_PLAN:
+                if not self._state.background_refreshing_plan:
+                    return self._state.current_plan
+                if self._state.background_refreshing_plan.prepare_response.exception():
+                    # start another refresh. Don't remove the current plan since we don't have a
+                    # replacement.
+                    background_refresh = self._start_new_request()
+                    updated_version = PrepareQueryVersion(background_refresh)
+                    self._state = _PrepareState(self._state.current_plan, updated_version)
+                self._state = self._state.promote()
+            else:
+                raise ValueError("Unexpected error, invalud update_type: " + update_type)
+            return self._state.current_plan
+
+    @CrossSync.convert
+    async def _mark_expired(self, plan_version: int):
+        """
+        Marks a specific plan version as expired, typically triggered by the server.
+
+        If the specified `plan_version` matches the *currently active* plan version,
+        this method will trigger an immediate replacement of the current plan.
+        It will attempt to promote a completed background refresh if available and
+        successful, otherwise it will initiate a new synchronous request for a
+        replacement plan.
+
+        If the `plan_version` does not match the current active plan (meaning the plan
+        was already updated, likely by a background refresh), this call is a no-op
+        and returns the current active plan.
+
+        Args:
+            plan_version (int): The internal version ID of the plan reported as expired.
+
+        Returns:
+            PrepareQueryVersion: The new active plan version after handling the expiry.
+        """
+        local_plan_state = self._state
+        if local_plan_state.current_plan.version == plan_version:
+            return await self._maybe_update_state(local_plan_state, _UpdateType.EXPIRE_CURRENT_PLAN)
+        else:
+            # Plan has already been updated from another request
+            return self._state.current_plan
+        
+    def _start_new_request(self) -> CrossSync.Future[PrepareResponse]:
+        return CrossSync.create_task(
+            self._start_prepare_request,
+            sync_executor=self._executor,
+            task_name="PrepareQuery refresh",
+        )
+    
+    @CrossSync.convert
+    async def _start_prepare_request(self) -> PrepareResponse:
+        predicate = retries.if_exception_type(
+            *[_get_error_type(e) for e in self._prepare_retryable_errors]
+        )
+        operation_timeout, attempt_timeout = _align_timeouts(
+            self._prepare_operation_timeout, self._prepare_attempt_timeout
+        )
+        prepare_sleep_generator = retries.exponential_sleep_generator(0.01, 2, 60)
+        target = partial(
+            self._client._gapic_client.prepare_query,
+            request=self._prepare_request,
+            timeout=attempt_timeout,
+            retry=None,
+        )
+        response = await CrossSync.retry_target(
+            target,
+            predicate,
+            prepare_sleep_generator,
+            operation_timeout,
+            exception_factory=_retry_exception_factory,
+        )
+        return PrepareResponse.from_pb(response)

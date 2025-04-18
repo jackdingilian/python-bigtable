@@ -23,6 +23,7 @@ from typing import (
     TYPE_CHECKING,
 )
 from google.api_core import retry as retries
+from google.api_core.exceptions import DeadlineExceeded, FailedPrecondition
 
 from google.cloud.bigtable.data.execute_query._byte_cursor import _ByteCursor
 from google.cloud.bigtable.data._helpers import (
@@ -49,12 +50,17 @@ from google.cloud.bigtable.data._cross_sync import CrossSync
 if TYPE_CHECKING:
     if CrossSync.is_async:
         from google.cloud.bigtable.data import BigtableDataClientAsync as DataClientType
+        from google.cloud.bigtable.data.execute_query import PreparedStatementAsync as PreparedStatement
     else:
         from google.cloud.bigtable.data import BigtableDataClient as DataClientType
+        from google.cloud.bigtable.data.execute_query import PreparedStatement
+
 
 __CROSS_SYNC_OUTPUT__ = (
     "google.cloud.bigtable.data.execute_query._sync_autogen.execute_query_iterator"
 )
+
+PREPARED_QUERY_EXPIRED_VIOLATION = "PREPARED_QUERY_EXPIRED"
 
 
 def _has_resume_token(response: ExecuteQueryResponse) -> bool:
@@ -62,6 +68,23 @@ def _has_resume_token(response: ExecuteQueryResponse) -> bool:
     if response_pb.HasField("results"):
         results = response_pb.results
         return len(results.resume_token) > 0
+    return False
+
+
+def _should_retry(retryable_excs):
+    base_predicate = retries.if_exception_type(*retryable_excs)
+    def handling_prepare_expiry_predicate(exception: Exception) -> bool:
+        return is_prepared_query_expired_exception(exception) or base_predicate(exception)
+    return handling_prepare_expiry_predicate   
+
+
+def is_prepared_query_expired_exception(e: Exception) -> bool:
+    if isinstance(e, FailedPrecondition):
+        for detail in e.details:
+            if detail.violations:
+                for v in detail.violations:
+                    if v.type and v.type == PREPARED_QUERY_EXPIRED_VIOLATION:
+                        return True
     return False
 
 
@@ -81,8 +104,8 @@ class ExecuteQueryIteratorAsync:
         client: DataClientType,
         instance_id: str,
         app_profile_id: Optional[str],
-        request_body: Dict[str, Any],
-        prepare_metadata: Metadata,
+        prepared_statement: PreparedStatement,
+        pb_params,
         attempt_timeout: float | None,
         operation_timeout: float,
         req_metadata: Sequence[Tuple[str, str]] = (),
@@ -115,7 +138,10 @@ class ExecuteQueryIteratorAsync:
         self._app_profile_id = app_profile_id
         self._client = client
         self._instance_id = instance_id
-        self._prepare_metadata = prepare_metadata
+        self._instance_name = self._client._gapic_client.instance_path(self._client.project, self._instance_id)
+        self._prepared_statement = prepared_statement
+        self._latest_prepare_version = None
+        self._pb_params = pb_params
         self._final_metadata = None
         self._byte_cursor = _ByteCursor()
         self._reader: _Reader[QueryResultRow] = _QueryResultRowReader()
@@ -123,13 +149,12 @@ class ExecuteQueryIteratorAsync:
         self._result_generator = self._next_impl()
         self._register_instance_task = None
         self._is_closed = False
-        self._request_body = request_body
         self._attempt_timeout_gen = _attempt_timeout_generator(
             attempt_timeout, operation_timeout
         )
         self._stream = CrossSync.retry_target_stream(
             self._make_request_with_resume_token,
-            retries.if_exception_type(*retryable_excs),
+            _should_retry(retryable_excs),
             retries.exponential_sleep_generator(0.01, 60, multiplier=2),
             operation_timeout,
             exception_factory=_retry_exception_factory,
@@ -161,25 +186,60 @@ class ExecuteQueryIteratorAsync:
     def table_name(self) -> Optional[str]:
         """Returns the table_name of the iterator."""
         return self._table_name
-
+    
+    @CrossSync.convert
+    async def _get_latest_prepare_response(self):
+        if not self._latest_prepare_version:
+            self._latest_prepare_version = await self._prepared_statement._get_latest_plan()
+        return self._latest_prepare_version
+    
+    @CrossSync.convert
+    async def _trigger_plan_update_on_expiry(self):
+        # TODO check token
+        expired_version = self._latest_prepare_version.version
+        self._latest_prepare_version = await self._prepared_statement._mark_expired(expired_version)
+    
     @CrossSync.convert
     async def _make_request_with_resume_token(self):
         """
         perfoms the rpc call using the correct resume token.
         """
+        attempt_timeout_seconds: float = next(self._attempt_timeout_gen)
+        latest_prepare_version = await self._get_latest_prepare_response()
+        # TODO catch prepare errors and translate to refresh & retry
+        complete, timed_out = await CrossSync.wait([latest_prepare_version.prepare_response], timeout=attempt_timeout_seconds)
+        if timed_out:
+            # TODO
+            raise DeadlineExceeded()
+        elif not complete:
+            raise ValueError("Unexpected failure waiting for PreparedStatement to refresh")
         resume_token = self._byte_cursor.prepare_for_new_request()
+        # TODO better sync w metadata
+        prepare_response = complete.pop().result()
+        self._prepare_metadata = prepare_response.metadata
         request = ExecuteQueryRequestPB(
             {
-                **self._request_body,
+                "instance_name": self._instance_name,
+                "app_profile_id": self._app_profile_id,
+                "params": self._pb_params,
+                "prepared_query": prepare_response.prepared_query,
                 "resume_token": resume_token,
             }
         )
-        return await self._client._gapic_client.execute_query(
-            request,
-            timeout=next(self._attempt_timeout_gen),
-            metadata=self._req_metadata,
-            retry=None,
-        )
+
+        try:
+            async for res in await self._client._gapic_client.execute_query(
+                request,
+                # TODO calculate elapsed time
+                timeout=attempt_timeout_seconds,
+                metadata=self._req_metadata,
+                retry=None,
+            ):
+                yield res
+        except Exception as e:
+            if is_prepared_query_expired_exception(e):
+                await self._trigger_plan_update_on_expiry()
+            raise(e)
 
     @CrossSync.convert
     async def _next_impl(self) -> CrossSync.Iterator[QueryResultRow]:

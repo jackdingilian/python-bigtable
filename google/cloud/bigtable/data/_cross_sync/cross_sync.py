@@ -90,6 +90,7 @@ class CrossSync(metaclass=MappingMeta):
     Event: TypeAlias = asyncio.Event
     Semaphore: TypeAlias = asyncio.Semaphore
     StopIteration: TypeAlias = StopAsyncIteration
+    Lock: TypeAlias = asyncio.Lock
     # provide aliases for common async type annotations
     Awaitable: TypeAlias = typing.Awaitable
     Iterable: TypeAlias = AsyncIterable
@@ -248,6 +249,7 @@ class CrossSync(metaclass=MappingMeta):
         Event: TypeAlias = threading.Event
         Semaphore: TypeAlias = threading.Semaphore
         StopIteration: TypeAlias = StopIteration
+        Lock: TypeAlias = threading.Lock
         # type annotations
         Awaitable: TypeAlias = Union[T]
         Iterable: TypeAlias = typing.Iterable
